@@ -31,6 +31,35 @@
 #include <AK/CircularQueue.h>
 #include <termios.h>
 
+struct Job {
+    String command;
+    int id;
+};
+
+class JobTable {
+public:
+    JobTable() : m_max_job_id(0) { }
+    ~JobTable() { }
+
+    int AddJob(String command) {
+        int next_id = ++m_max_job_id;
+        m_jobs.append({command, next_id});
+        return next_id; 
+    }
+
+    Vector<Job>::ConstIterator begin() const {
+        return m_jobs.begin();
+    }
+
+    Vector<Job>::ConstIterator end() const {
+        return m_jobs.end();
+    }
+
+private:
+    int m_max_job_id;
+    Vector<Job> m_jobs;
+};
+
 struct GlobalState {
     String cwd;
     String username;
@@ -45,6 +74,7 @@ struct GlobalState {
     int last_return_code { 0 };
     Vector<String> directory_stack;
     CircularQueue<String, 8> cd_history; // FIXME: have a configurable cd history length
+    JobTable jobs;
 };
 
 extern GlobalState g;

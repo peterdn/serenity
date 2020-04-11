@@ -523,6 +523,46 @@ static int sh_dirs(int argc, const char** argv)
     return 0;
 }
 
+static int sh_jobs(int argc, const char** argv)
+{
+    UNUSED_PARAM(argv);
+    if (argc > 1) {
+        printf("usage: jobs\n");
+        return 0;
+    }
+    
+    for (const auto &job : g.jobs) {
+        printf("[%d]\t\t%s\n", job.id, job.command.characters());
+    }
+
+    int exit_code = 0;
+    return exit_code;
+}
+
+static int sh_fg(int argc, const char** argv)
+{
+    if (argc != 2) {
+        printf("usage: fg <job id>\n");
+        return 0;
+    }
+    auto job_id = argv[1];
+    printf("FOREGROUNDING %s\n", job_id);
+    int exit_code = 0;
+    return exit_code;
+}
+
+static int sh_bg(int argc, const char** argv)
+{
+    if (argc != 2) {
+        printf("usage: bg <job id>\n");
+        return 0;
+    }
+    auto job_id = argv[1];
+    printf("BACKGROUNDING %s\n", job_id);
+    int exit_code = 0;
+    return exit_code;
+}
+
 static bool handle_builtin(int argc, const char** argv, int& retval)
 {
     if (argc == 0)
@@ -573,6 +613,18 @@ static bool handle_builtin(int argc, const char** argv, int& retval)
     }
     if (!strcmp(argv[0], "time")) {
         retval = sh_time(argc, argv);
+        return true;
+    }
+    if (!strcmp(argv[0], "jobs")) {
+        retval = sh_jobs(argc, argv);
+        return true;
+    }
+    if (!strcmp(argv[0], "fg")) {
+        retval = sh_fg(argc, argv);
+        return true;
+    }
+    if (!strcmp(argv[0], "bg")) {
+        retval = sh_bg(argc, argv);
         return true;
     }
     return false;
@@ -936,12 +988,13 @@ static int run_command(const String& cmd)
         for (size_t i = 0; i < children.size(); ++i) {
             auto& child = children[i];
             if (child.start_state == StartState::Background) {
+                int job_id = g.jobs.AddJob(child.name);
                 return_value = 0;
-                printf("[] %d\t%s\n", child.pid, child.name.characters());
+                printf("[%d] %d\t%s\n", job_id, child.pid, child.name.characters());
                 continue;
             }
             do {
-                int rc = waitpid(child.pid, &wstatus, 0);
+                int rc = waitpid(child.pid, &wstatus, WUNTRACED);
                 if (rc < 0 && errno != EINTR) {
                     if (errno != ECHILD)
                         perror("waitpid");
