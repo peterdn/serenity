@@ -42,11 +42,11 @@ void Parser::commit_token(AllowEmptyToken allow_empty)
     m_token.clear_with_capacity();
 };
 
-void Parser::commit_subcommand()
+void Parser::commit_subcommand(StartState start_state)
 {
     if (m_tokens.is_empty())
         return;
-    m_subcommands.append({ move(m_tokens), move(m_redirections), {} });
+    m_subcommands.append({ move(m_tokens), move(m_redirections), {}, start_state });
 }
 
 void Parser::commit_command()
@@ -86,6 +86,19 @@ Vector<Command> Parser::parse()
                 commit_token();
                 commit_subcommand();
                 commit_command();
+                break;
+            }
+            if (ch == '&') {
+                auto start_state = StartState::Background;
+                if (i < m_input.length() - 1 && m_input.characters()[i + 1] == '&') {
+                    i++;
+                    m_tokens.append("&&");
+                    commit_token();
+                } else {
+                    commit_token();
+                    commit_subcommand(start_state);
+                    commit_command();
+                }
                 break;
             }
             if (ch == '|') {

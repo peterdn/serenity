@@ -47,10 +47,16 @@ struct Rewiring {
     int rewire_fd { -1 };
 };
 
+enum class StartState : u8 {
+    Foreground = 0,
+    Background = 1,
+};
+
 struct Subcommand {
     Vector<String> args;
     Vector<Redirection> redirections;
     Vector<Rewiring> rewirings;
+    StartState start_state;
 };
 
 struct Command {
@@ -69,7 +75,7 @@ public:
 private:
     enum class AllowEmptyToken { No, Yes };
     void commit_token(AllowEmptyToken = AllowEmptyToken::No);
-    void commit_subcommand();
+    void commit_subcommand(StartState = StartState::Foreground);
     void commit_command();
     void do_pipe();
     void begin_redirect_read(int fd);

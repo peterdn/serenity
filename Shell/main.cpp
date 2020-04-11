@@ -798,6 +798,7 @@ static int run_command(const String& cmd)
     struct SpawnedProcess {
         String name;
         pid_t pid;
+        StartState start_state;
     };
 
     int return_value = 0;
@@ -885,11 +886,14 @@ static int run_command(const String& cmd)
             if (handle_builtin(argv.size() - 1, argv.data(), retval))
                 return retval;
 
-            pid_t child = fork();
-            if (!child) {
-                setpgid(0, 0);
-                tcsetpgrp(0, getpid());
-                tcsetattr(0, TCSANOW, &g.default_termios);
+            pid_t child_pid = fork();
+            if (child_pid == 0) {
+                if (subcommand.start_state == StartState::Foreground) {
+                    setpgid(0, 0);
+                    tcsetpgrp(0, getpid());
+                    tcsetattr(0, TCSANOW, &g.default_termios);
+                }
+
                 for (auto& rewiring : subcommand.rewirings) {
 #ifdef SH_DEBUG
                     dbgprintf("in %s<%d>, dup2(%d, %d)\n", argv[0], getpid(), rewiring.rewire_fd, rewiring.fd);
@@ -913,7 +917,7 @@ static int run_command(const String& cmd)
                 }
                 ASSERT_NOT_REACHED();
             }
-            children.append({ argv[0], child });
+            children.append({ argv[0], child_pid, subcommand.start_state });
         }
 
 #ifdef SH_DEBUG
@@ -931,6 +935,11 @@ static int run_command(const String& cmd)
 
         for (size_t i = 0; i < children.size(); ++i) {
             auto& child = children[i];
+            if (child.start_state == StartState::Background) {
+                return_value = 0;
+                printf("[] %d\t%s\n", child.pid, child.name.characters());
+                continue;
+            }
             do {
                 int rc = waitpid(child.pid, &wstatus, 0);
                 if (rc < 0 && errno != EINTR) {
