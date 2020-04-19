@@ -30,6 +30,7 @@
 #include <AK/MappedFile.h>
 #include <AK/NonnullOwnPtrVector.h>
 #include <LibGfx/GIFLoader.h>
+#include <LibGfx/Painter.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -84,14 +85,19 @@ struct ImageDescriptor {
     Vector<u8> lzw_encoded_bytes;
 };
 
-RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
+struct GIFLoadingContext {
+    enum State {
+        NotDecoded = 0,
+        Error,
+        HeaderDecoded,
+    };
+    const u8 *data { nullptr };
+    size_t data_size { 0 };
+    RefPtr<Gfx::Bitmap> bitmap { nullptr };
+};
+
+Optional<GIFFormat> decode_gif_header(BufferStream &stream)
 {
-    if (data_size < 32)
-        return nullptr;
-
-    auto buffer = ByteBuffer::wrap(data, data_size);
-    BufferStream stream(buffer);
-
     static const char valid_header_87[] = "GIF87a";
     static const char valid_header_89[] = "GIF89a";
 
@@ -99,15 +105,36 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
     for (int i = 0; i < 6; ++i)
         stream >> header[i];
 
-    GIFFormat format;
     if (!memcmp(header, valid_header_87, sizeof(header)))
-        format = GIFFormat::GIF87a;
+        return Optional {GIFFormat::GIF87a};
     else if (!memcmp(header, valid_header_89, sizeof(header)))
-        format = GIFFormat::GIF89a;
-    else
+        return Optional {GIFFormat::GIF89a};
+
+    return {};
+}
+
+int pow2(int n) {
+    int p = 1;
+    while (n-- > 0) {
+        p *= 2;
+    }
+    return p;
+}
+
+RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
+{
+    if (data_size < 32)
         return nullptr;
 
-    printf("Format is %s\n", format == GIFFormat::GIF89a ? "GIF89a" : "GIF87a");
+    auto buffer = ByteBuffer::wrap(data, data_size);
+    BufferStream stream(buffer);
+    auto format = decode_gif_header(stream);
+
+    if (!format.has_value()) {
+        return nullptr;
+    }
+
+    printf("Format is %s\n", format.value() == GIFFormat::GIF89a ? "GIF89a" : "GIF87a");
 
     LogicalScreen logical_screen;
     stream >> logical_screen.width;
@@ -261,7 +288,162 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
         // FIXME: Decode the LZW-encoded bytes and turn them into an image.
     }
 
-    return nullptr;
+    // return nullptr;
+
+    dbg() << "First image: " << images.first().lzw_encoded_bytes.size() << " bytes, min coding size: " << images.first().lzw_min_code_size;
+
+    // initialise code table
+    u8 initial_code_table_size = pow2(images.first().lzw_min_code_size);
+
+    struct CodeTableEntry {
+        Vector<u8> colors;
+        u16 code;
+    };
+
+    Vector<CodeTableEntry> code_table;
+    dbg() << "initial_code_table_size: " << initial_code_table_size;
+    for (u8 i = 0; i < initial_code_table_size; ++i) {
+        code_table.append({{i}, i});
+    }
+
+    // Add clear code
+    code_table.append({{0}, initial_code_table_size});
+    
+    // Add end of image code
+    code_table.append({{0}, (u8)((int)initial_code_table_size + 1)});
+
+    int code_size = 3;
+    int current_code_index = 0;
+    Vector<u8> color_stream;
+    Vector<u8> prev_output;
+    Vector<u8> conjecture;
+    // bool started = false;
+    while (true) {
+        int current_bit_index = current_code_index * code_size;
+        
+        int shift = (current_bit_index % 8);
+        // dbg() << "shift: " << shift;
+        u16 mask = (pow2(code_size) - 1) << shift;
+
+        size_t current_byte_index = current_bit_index / 8;
+
+        if (current_byte_index >= images.first().lzw_encoded_bytes.size()) {
+            dbg() << "Reached end";
+            break;
+        }        
+        u16* addr = ((u16 *)&images.first().lzw_encoded_bytes.at(current_byte_index));
+        u16 tuple = *addr;
+        // dbg() << "tuple: " << tuple;
+
+        dbg() << "current_bit_index: " << current_bit_index;
+        // dbg() << "mask: " << mask;
+        u16 code = (tuple & mask) >> current_bit_index % 8;
+
+        if (code == initial_code_table_size) {
+            dbg() << "CLEARING";
+            // TODO
+            ++current_code_index;
+            continue;
+        }
+
+        dbg() << "Code: " << code;
+
+        // Lookup code in the table...
+        auto entry = code_table.find([&](const auto& v) {
+            return v.code == code;
+        });
+        if (entry != code_table.end()) {
+            dbg() << "Found color string for code " << code;
+
+            prev_output.clear();
+            prev_output.append((*entry).colors);
+            color_stream.append((*entry).colors);
+
+            // if (started) {
+            //     conjecture.append((*entry).colors);
+            //     dbg() << "Adding code to dictionary: " << code;
+            //     code_table.append({conjecture, code});
+            // }
+                
+            conjecture.clear();
+            conjecture.append((*entry).colors);
+        } else {
+            conjecture.append(prev_output);
+
+            dbg() << "Didn't find, conjecture:";
+            for (const auto& conj : conjecture) {
+                dbg() << conj;
+            }
+
+            prev_output.clear();
+            prev_output.append(conjecture);
+
+            dbg() << "Adding code to dictionary: " << code;
+            code_table.append({conjecture, code});
+
+            color_stream.append(conjecture);
+            conjecture.clear();
+        }
+
+        // started = true;
+        ++current_code_index;
+    }
+
+    for (u8 color : color_stream) {
+        dbg() << "Color: " << color;
+    }
+
+    // for (size_t i = 0; i < images.first().lzw_encoded_bytes.size(); ++i) {
+    //     auto byte = images.first().lzw_encoded_bytes.at(i);
+    //     dbg() << "byte: " << byte;
+    // }
+
+    auto bitmap = Bitmap::create_purgeable(BitmapFormat::RGBA32, {images.first().width, images.first().height});
+    bitmap->fill(Color::from_rgb(0xFF0000));
+    return bitmap;
+}
+
+GIFImageDecoderPlugin::GIFImageDecoderPlugin(const u8* data, size_t size)
+{
+    m_context = make<GIFLoadingContext>();
+    m_context->data = data;
+    m_context->data_size = size;
+}
+
+GIFImageDecoderPlugin::~GIFImageDecoderPlugin() { }
+
+Size GIFImageDecoderPlugin::size() 
+{
+    if (m_context->bitmap.is_null()) {
+        return {};
+    }
+    
+    return { m_context->bitmap->width(), m_context->bitmap->height() };
+}
+
+RefPtr<Gfx::Bitmap> GIFImageDecoderPlugin::bitmap() 
+{
+    if (m_context->bitmap.is_null()) {
+        m_context->bitmap = load_gif_impl(m_context->data, m_context->data_size); 
+    }
+    dbg() << "Returning bitmap with size " << m_context->bitmap->width() << ", " << m_context->bitmap->height();
+    return m_context->bitmap;
+}
+
+void GIFImageDecoderPlugin::set_volatile() 
+{
+
+}
+
+bool GIFImageDecoderPlugin::set_nonvolatile() 
+{
+    return true;
+}
+
+bool GIFImageDecoderPlugin::sniff() {
+    auto buffer = ByteBuffer::wrap(m_context->data, m_context->data_size);
+    BufferStream stream(buffer);
+    return decode_gif_header(stream).has_value();
 }
 
 }

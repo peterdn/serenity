@@ -46,6 +46,8 @@ public:
     virtual void set_volatile() override;
     [[nodiscard]] virtual bool set_nonvolatile() override;
 
+    virtual bool sniff() override;
+
 private:
     OwnPtr<GIFLoadingContext> m_context;
 };
