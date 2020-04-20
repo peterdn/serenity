@@ -139,6 +139,7 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
     LogicalScreen logical_screen;
     stream >> logical_screen.width;
     stream >> logical_screen.height;
+    dbg() << "width: " << logical_screen.width << ", height: " << logical_screen.height;
     if (stream.handle_read_failure())
         return nullptr;
 
@@ -175,6 +176,7 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
 
     printf("color_map_entry_count: %d\n", color_map_entry_count);
 
+    dbg() << "color_map_entry_count = " << color_map_entry_count;
     for (int i = 0; i < color_map_entry_count; ++i) {
         stream >> logical_screen.color_map[i].r;
         stream >> logical_screen.color_map[i].g;
@@ -234,6 +236,7 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
             stream >> image.width;
             stream >> image.height;
             stream >> packed_fields;
+            dbg() << "Packed fields: " << packed_fields;
             if (stream.handle_read_failure())
                 return nullptr;
             printf("Image descriptor: %d,%d %dx%d, %02x\n", image.x, image.y, image.width, image.height, packed_fields);
@@ -293,7 +296,7 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
     dbg() << "First image: " << images.first().lzw_encoded_bytes.size() << " bytes, min coding size: " << images.first().lzw_min_code_size;
 
     // initialise code table
-    u8 initial_code_table_size = pow2(images.first().lzw_min_code_size);
+    u16 initial_code_table_size = pow2(images.first().lzw_min_code_size);
 
     struct CodeTableEntry {
         Vector<u8> colors;
@@ -302,48 +305,70 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
 
     Vector<CodeTableEntry> code_table;
     dbg() << "initial_code_table_size: " << initial_code_table_size;
-    for (u8 i = 0; i < initial_code_table_size; ++i) {
-        code_table.append({{i}, i});
+    for (u16 i = 0; i < initial_code_table_size; ++i) {
+        code_table.append({{(u8)i}, i});
     }
 
     // Add clear code
     code_table.append({{0}, initial_code_table_size});
     
     // Add end of image code
-    code_table.append({{0}, (u8)((int)initial_code_table_size + 1)});
+    code_table.append({{0}, (u16)((int)initial_code_table_size + 1)});
 
-    int code_size = 3;
-    int current_code_index = 0;
+    int code_size = images.first().lzw_min_code_size + 1;
     Vector<u8> color_stream;
     Vector<u8> prev_output;
     Vector<u8> conjecture;
     // bool started = false;
+    int current_bit_index = 0;
     while (true) {
-        int current_bit_index = current_code_index * code_size;
-        
         int shift = (current_bit_index % 8);
         // dbg() << "shift: " << shift;
         u16 mask = (pow2(code_size) - 1) << shift;
 
         size_t current_byte_index = current_bit_index / 8;
 
+        if (code_size == 11) {
+            dbg() << "current_bit_index: " << current_bit_index;
+            dbg() << "shift: " << shift;
+            dbg() << "mask: " << mask;
+            dbg() << "current_byte_index: " << current_byte_index;
+        }
+
         if (current_byte_index >= images.first().lzw_encoded_bytes.size()) {
-            dbg() << "Reached end";
+            dbg() << "PREMATURELY Reached end";
             break;
         }        
         u16* addr = ((u16 *)&images.first().lzw_encoded_bytes.at(current_byte_index));
         u16 tuple = *addr;
         // dbg() << "tuple: " << tuple;
 
-        dbg() << "current_bit_index: " << current_bit_index;
+        // dbg() << "current_bit_index: " << current_bit_index;
         // dbg() << "mask: " << mask;
         u16 code = (tuple & mask) >> current_bit_index % 8;
 
         if (code == initial_code_table_size) {
             dbg() << "CLEARING";
             // TODO
-            ++current_code_index;
+            current_bit_index += code_size;
+            code_size = images.first().lzw_min_code_size + 1;
+
+            code_table.clear();
+            dbg() << "initial_code_table_size: " << initial_code_table_size;
+            for (u16 i = 0; i < initial_code_table_size; ++i) {
+                code_table.append({{(u8)i}, i});
+            }
+
+            // Add clear code
+            code_table.append({{0}, initial_code_table_size});
+            
+            // Add end of image code
+            code_table.append({{0}, (u8)((int)initial_code_table_size + 1)});
+
             continue;
+        } else if (code == initial_code_table_size + 1) {
+            dbg() << "END OF INFORMATION";
+            break;
         }
 
         dbg() << "Code: " << code;
@@ -352,54 +377,100 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
         auto entry = code_table.find([&](const auto& v) {
             return v.code == code;
         });
+
+        current_bit_index += code_size;
+
+        Vector<u8> output;
         if (entry != code_table.end()) {
-            dbg() << "Found color string for code " << code;
+            // dbg() << "Found color string for code " << code;
 
-            prev_output.clear();
-            prev_output.append((*entry).colors);
-            color_stream.append((*entry).colors);
+            output = (*entry).colors;
 
-            // if (started) {
-            //     conjecture.append((*entry).colors);
-            //     dbg() << "Adding code to dictionary: " << code;
-            //     code_table.append({conjecture, code});
-            // }
+            // if (!prev_output.is_empty()) {
+                conjecture.append(output.at(0));
                 
-            conjecture.clear();
-            conjecture.append((*entry).colors);
-        } else {
-            conjecture.append(prev_output);
+                auto new_entry = code_table.find([&](const auto& v) {
+                    return v.colors == conjecture;
+                });
+                if (new_entry == code_table.end()) {
+                    // dbg() << "Adding finalised conjecture to code_table as code: " << (u16)code_table.size();
+                    // for (const auto& conj : conjecture) {
+                    //     dbg() << conj;
+                    // }
+                    if (code_table.size() < 4096) {
+                        code_table.append({conjecture, (u16)code_table.size()});
+                        if ((int)code_table.size() >= pow2(code_size)) {
+                            ++code_size;
+                            dbg() << "Increased size of code table to: " << code_size << " as code_table.size = " << code_table.size();
+                            // if (code_size == 11) {
+                            //     break;
+                            // }
+                            // color_stream.append({0});
+                        }
+                    } else {
+                        dbg() << "Code table max size reached!";
+                    }
+                }
+            // }
 
-            dbg() << "Didn't find, conjecture:";
-            for (const auto& conj : conjecture) {
-                dbg() << conj;
+            prev_output = output;
+
+        } else {
+            if (!prev_output.is_empty()) {
+                conjecture.append(prev_output.at(0));
+                // dbg() << "Adding finalised conjecture to code_table as code: " << (u16)code_table.size();
+                // for (const auto& conj : conjecture) {
+                //     dbg() << conj;
+                // }
+                if (code_table.size() < 4096) {
+                    code_table.append({conjecture, (u16)code_table.size()});
+                    if ((int)code_table.size() >= pow2(code_size)) {
+                        ++code_size;
+                        dbg() << "Increased size of code table to: " << code_size;
+                        // color_stream.append({0});
+                    }
+                } else {
+                    dbg() << "Code table max size reached!";
+                }
             }
 
-            prev_output.clear();
-            prev_output.append(conjecture);
-
-            dbg() << "Adding code to dictionary: " << code;
-            code_table.append({conjecture, code});
-
-            color_stream.append(conjecture);
-            conjecture.clear();
+            output = conjecture;
+            prev_output = output;
         }
 
+        color_stream.append(output);
+        dbg() << "color_stream size: " << color_stream.size();
+        conjecture = output;
+
         // started = true;
-        ++current_code_index;
     }
 
-    for (u8 color : color_stream) {
-        dbg() << "Color: " << color;
+    auto bitmap = Bitmap::create_purgeable(BitmapFormat::RGBA32, {images.first().width, images.first().height});
+    bitmap->fill(Color::from_rgb(0xFF0000));
+    
+    dbg() << "Total colors: " << color_stream.size();
+    for (size_t i = 0; i < color_stream.size(); ++i) {
+        auto color = color_stream.at(i);
+        auto rgb = logical_screen.color_map[color];
+        int x = i % images.first().width;
+        int y = i / images.first().width;
+        // dbg() << "i: " << i << ", x: " << x << ", y: " << y << ", Color index: " << color << ", actual color: (" << rgb.r << "," << rgb.g << "," << rgb.b << ")";
+        
+        if (color != 0) {
+            Color c = Color(rgb.r, rgb.g, rgb.b);
+            bitmap->set_pixel(x, y, c);
+        } else {
+            Color c = Color(rgb.r, rgb.g, rgb.b);
+            bitmap->set_pixel(x, y, c);
+        }
     }
+    dbg() << "Finished setting bitmap";
 
     // for (size_t i = 0; i < images.first().lzw_encoded_bytes.size(); ++i) {
     //     auto byte = images.first().lzw_encoded_bytes.at(i);
     //     dbg() << "byte: " << byte;
     // }
 
-    auto bitmap = Bitmap::create_purgeable(BitmapFormat::RGBA32, {images.first().width, images.first().height});
-    bitmap->fill(Color::from_rgb(0xFF0000));
     return bitmap;
 }
 
