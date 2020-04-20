@@ -324,7 +324,7 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
     while (true) {
         int shift = (current_bit_index % 8);
         // dbg() << "shift: " << shift;
-        u16 mask = (pow2(code_size) - 1) << shift;
+        u32 mask = (pow2(code_size) - 1) << shift;
 
         size_t current_byte_index = current_bit_index / 8;
 
@@ -339,8 +339,8 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
             dbg() << "PREMATURELY Reached end";
             break;
         }        
-        u16* addr = ((u16 *)&images.first().lzw_encoded_bytes.at(current_byte_index));
-        u16 tuple = *addr;
+        u32* addr = ((u32 *)&images.first().lzw_encoded_bytes.at(current_byte_index));
+        u32 tuple = *addr;
         // dbg() << "tuple: " << tuple;
 
         // dbg() << "current_bit_index: " << current_bit_index;
