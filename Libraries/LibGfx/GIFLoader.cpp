@@ -121,6 +121,139 @@ int pow2(int n) {
     return p;
 }
 
+
+class LZWDecoder {
+public:
+    struct CodeTableEntry {
+        Vector<u8> colors;
+        u16 code;
+    };
+
+    explicit LZWDecoder(const Vector<u8>& lzw_bytes)
+        : m_lzw_bytes(lzw_bytes)
+    {
+    }
+
+    void init_code_table(u8 min_code_size)
+    {
+        m_initial_code_table_size = pow2(min_code_size);
+        m_code_table.clear();
+        for (u16 i = 0; i < m_initial_code_table_size; ++i) {
+            m_code_table.append({ { (u8)i }, i });
+        }
+        m_original_code_table.clear();
+        m_original_code_table.append(m_code_table);
+    }
+
+    void add_code_to_table(u16 code, Vector<u8> entry)
+    {
+        m_code_table.append({ entry, code });
+        m_original_code_table.append({ entry, code });
+    }
+
+    void set_code_size(int code_size)
+    {
+        m_code_size = code_size;
+        m_original_code_size = code_size;
+    }
+
+    int resetted = 0;
+    void reset_code_table()
+    {
+        m_code_table.clear();
+        m_code_table.append(m_original_code_table);
+        m_code_size = m_original_code_size;
+        m_prev_output.clear();
+        m_conjecture.clear();
+    }
+
+    Optional<u16> next_code()
+    {
+        int shift = (m_current_bit_index % 8);
+        u32 mask = (pow2(m_code_size) - 1) << shift;
+
+        size_t current_byte_index = m_current_bit_index / 8;
+
+        if (current_byte_index >= m_lzw_bytes.size()) {
+            return {};
+        }
+        const u32* addr = ((const u32*)&m_lzw_bytes.at(current_byte_index));
+        u32 tuple = *addr;
+        m_current_code = (tuple & mask) >> m_current_bit_index % 8;
+        m_current_bit_index += m_code_size;
+        return m_current_code;
+    }
+
+    Vector<u8> get_output()
+    {
+        // Lookup code in the table...
+        auto entry = m_code_table.find([&](const auto& v) {
+            return v.code == m_current_code;
+        });
+
+        Vector<u8> output;
+        if (entry != m_code_table.end()) {
+            output = (*entry).colors;
+
+            // if (!prev_output.is_empty()) {
+            m_conjecture.append(output.at(0));
+
+            auto new_entry = m_code_table.find([&](const auto& v) {
+                return v.colors == m_conjecture;
+            });
+            if (new_entry == m_code_table.end()) {
+                if (m_code_table.size() < 4096) {
+                    m_code_table.append({ m_conjecture, (u16)m_code_table.size() });
+                    if ((int)m_code_table.size() >= pow2(m_code_size) && m_code_size < 12) {
+                        ++m_code_size;
+                    }
+                } else {
+                    dbg() << "Code table max size reached!";
+                }
+            }
+            // }
+
+            m_prev_output = output;
+
+        } else {
+            if (!m_prev_output.is_empty()) {
+                m_conjecture.append(m_prev_output.at(0));
+                if (m_code_table.size() < 4096) {
+                    m_code_table.append({ m_conjecture, (u16)m_code_table.size() });
+                    if ((int)m_code_table.size() >= pow2(m_code_size) && m_code_size < 12) {
+                        ++m_code_size;
+                    }
+                } else {
+                    dbg() << "Code table max size reached!";
+                }
+            }
+
+            output = m_conjecture;
+            m_prev_output = output;
+        }
+
+        // dbg() << "color_stream size: " << color_stream.size();
+        m_conjecture = output;
+
+        return output;
+    }
+
+private:
+    const Vector<u8>& m_lzw_bytes;
+    u16 m_initial_code_table_size { 0 };
+    Vector<CodeTableEntry> m_original_code_table {};
+    Vector<CodeTableEntry> m_code_table {};
+
+    int m_current_bit_index { 0 };
+    u8 m_original_code_size { 0 };
+    u8 m_code_size { 0 };
+
+    Vector<u8> m_prev_output {};
+    Vector<u8> m_conjecture {};
+
+    u16 m_current_code { 0 };
+};
+
 RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
 {
     if (data_size < 32)
@@ -294,136 +427,36 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
 
     dbg() << "First image: " << images.first().lzw_encoded_bytes.size() << " bytes, min coding size: " << images.first().lzw_min_code_size;
 
+
+    LZWDecoder decoder(images.first().lzw_encoded_bytes);
+    decoder.init_code_table(images.first().lzw_min_code_size);
+
     // initialise code table
     u16 initial_code_table_size = pow2(images.first().lzw_min_code_size);
-
-    struct CodeTableEntry {
-        Vector<u8> colors;
-        u16 code;
-    };
-
-    Vector<CodeTableEntry> code_table;
-    dbg() << "initial_code_table_size: " << initial_code_table_size;
-    for (u16 i = 0; i < initial_code_table_size; ++i) {
-        code_table.append({{(u8)i}, i});
-    }
+    decoder.set_code_size(images.first().lzw_min_code_size + 1);
 
     // Add clear code
-    code_table.append({{0}, initial_code_table_size});
-    
+    decoder.add_code_to_table(initial_code_table_size, { 0 });
     // Add end of image code
-    code_table.append({{0}, (u16)((int)initial_code_table_size + 1)});
+    decoder.add_code_to_table(initial_code_table_size + 1, { 0 });
 
-    int code_size = images.first().lzw_min_code_size + 1;
     Vector<u8> color_stream;
-    Vector<u8> prev_output;
-    Vector<u8> conjecture;
-    // bool started = false;
-    int current_bit_index = 0;
     while (true) {
-        int shift = (current_bit_index % 8);
-        // dbg() << "shift: " << shift;
-        u32 mask = (pow2(code_size) - 1) << shift;
-
-        size_t current_byte_index = current_bit_index / 8;
-
-        if (current_byte_index >= images.first().lzw_encoded_bytes.size()) {
+        Optional<u16> code = decoder.next_code();
+        if (!code.has_value()) {
             dbg() << "PREMATURELY Reached end";
             break;
-        }        
-        u32* addr = ((u32 *)&images.first().lzw_encoded_bytes.at(current_byte_index));
-        u32 tuple = *addr;
-        // dbg() << "tuple: " << tuple;
+        }
 
-        // dbg() << "current_bit_index: " << current_bit_index;
-        // dbg() << "mask: " << mask;
-        u16 code = (tuple & mask) >> current_bit_index % 8;
-
-        if (code == initial_code_table_size) {
-            current_bit_index += code_size;
-            code_size = images.first().lzw_min_code_size + 1;
-
-            code_table.clear();
-            for (u16 i = 0; i < initial_code_table_size; ++i) {
-                code_table.append({{(u8)i}, i});
-            }
-
-            // Add clear code
-            code_table.append({{0}, initial_code_table_size});
-            
-            // Add end of image code
-            code_table.append({{0}, (u8)((int)initial_code_table_size + 1)});
-
-            prev_output.clear();
-            conjecture.clear();
-
+        if (code.value() == initial_code_table_size) {
+            decoder.reset_code_table();
             continue;
-        } else if (code == initial_code_table_size + 1) {
+        } else if (code.value() == initial_code_table_size + 1) {
             dbg() << "END OF INFORMATION";
             break;
         }
 
-        // Lookup code in the table...
-        auto entry = code_table.find([&](const auto& v) {
-            return v.code == code;
-        });
-
-        current_bit_index += code_size;
-
-        Vector<u8> output;
-        if (entry != code_table.end()) {
-            output = (*entry).colors;
-
-            // if (!prev_output.is_empty()) {
-                conjecture.append(output.at(0));
-                
-                auto new_entry = code_table.find([&](const auto& v) {
-                    return v.colors == conjecture;
-                });
-                if (new_entry == code_table.end()) {
-                    // dbg() << "Adding finalised conjecture to code_table as code: " << (u16)code_table.size();
-                    // for (const auto& conj : conjecture) {
-                    //     dbg() << conj;
-                    // }
-                    if (code_table.size() < 4096) {
-                        code_table.append({conjecture, (u16)code_table.size()});
-                        if ((int)code_table.size() >= pow2(code_size) && code_size < 12) {
-                            ++code_size;
-                        }
-                    } else {
-                        dbg() << "Code table max size reached!";
-                    }
-                }
-            // }
-
-            prev_output = output;
-
-        } else {
-            if (!prev_output.is_empty()) {
-                conjecture.append(prev_output.at(0));
-                // dbg() << "Adding finalised conjecture to code_table as code: " << (u16)code_table.size();
-                // for (const auto& conj : conjecture) {
-                //     dbg() << conj;
-                // }
-                if (code_table.size() < 4096) {
-                    code_table.append({conjecture, (u16)code_table.size()});
-                    if ((int)code_table.size() >= pow2(code_size) && code_size < 12) {
-                        ++code_size;
-                    }
-                } else {
-                    dbg() << "Code table max size reached!";
-                }
-            }
-
-            output = conjecture;
-            prev_output = output;
-        }
-
-        color_stream.append(output);
-        // dbg() << "color_stream size: " << color_stream.size();
-        conjecture = output;
-
-        // started = true;
+        color_stream.append(decoder.get_output());
     }
 
     auto bitmap = Bitmap::create_purgeable(BitmapFormat::RGBA32, {images.first().width, images.first().height});
