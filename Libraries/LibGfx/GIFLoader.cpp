@@ -236,7 +236,6 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
             stream >> image.width;
             stream >> image.height;
             stream >> packed_fields;
-            dbg() << "Packed fields: " << packed_fields;
             if (stream.handle_read_failure())
                 return nullptr;
             printf("Image descriptor: %d,%d %dx%d, %02x\n", image.x, image.y, image.width, image.height, packed_fields);
@@ -328,13 +327,6 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
 
         size_t current_byte_index = current_bit_index / 8;
 
-        if (code_size == 11) {
-            dbg() << "current_bit_index: " << current_bit_index;
-            dbg() << "shift: " << shift;
-            dbg() << "mask: " << mask;
-            dbg() << "current_byte_index: " << current_byte_index;
-        }
-
         if (current_byte_index >= images.first().lzw_encoded_bytes.size()) {
             dbg() << "PREMATURELY Reached end";
             break;
@@ -348,13 +340,10 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
         u16 code = (tuple & mask) >> current_bit_index % 8;
 
         if (code == initial_code_table_size) {
-            dbg() << "CLEARING";
-            // TODO
             current_bit_index += code_size;
             code_size = images.first().lzw_min_code_size + 1;
 
             code_table.clear();
-            dbg() << "initial_code_table_size: " << initial_code_table_size;
             for (u16 i = 0; i < initial_code_table_size; ++i) {
                 code_table.append({{(u8)i}, i});
             }
@@ -365,13 +354,14 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
             // Add end of image code
             code_table.append({{0}, (u8)((int)initial_code_table_size + 1)});
 
+            prev_output.clear();
+            conjecture.clear();
+
             continue;
         } else if (code == initial_code_table_size + 1) {
             dbg() << "END OF INFORMATION";
             break;
         }
-
-        dbg() << "Code: " << code;
 
         // Lookup code in the table...
         auto entry = code_table.find([&](const auto& v) {
@@ -382,8 +372,6 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
 
         Vector<u8> output;
         if (entry != code_table.end()) {
-            // dbg() << "Found color string for code " << code;
-
             output = (*entry).colors;
 
             // if (!prev_output.is_empty()) {
@@ -399,13 +387,8 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
                     // }
                     if (code_table.size() < 4096) {
                         code_table.append({conjecture, (u16)code_table.size()});
-                        if ((int)code_table.size() >= pow2(code_size)) {
+                        if ((int)code_table.size() >= pow2(code_size) && code_size < 12) {
                             ++code_size;
-                            dbg() << "Increased size of code table to: " << code_size << " as code_table.size = " << code_table.size();
-                            // if (code_size == 11) {
-                            //     break;
-                            // }
-                            // color_stream.append({0});
                         }
                     } else {
                         dbg() << "Code table max size reached!";
@@ -424,10 +407,8 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
                 // }
                 if (code_table.size() < 4096) {
                     code_table.append({conjecture, (u16)code_table.size()});
-                    if ((int)code_table.size() >= pow2(code_size)) {
+                    if ((int)code_table.size() >= pow2(code_size) && code_size < 12) {
                         ++code_size;
-                        dbg() << "Increased size of code table to: " << code_size;
-                        // color_stream.append({0});
                     }
                 } else {
                     dbg() << "Code table max size reached!";
@@ -439,7 +420,7 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
         }
 
         color_stream.append(output);
-        dbg() << "color_stream size: " << color_stream.size();
+        // dbg() << "color_stream size: " << color_stream.size();
         conjecture = output;
 
         // started = true;
