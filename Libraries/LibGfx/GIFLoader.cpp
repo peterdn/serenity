@@ -142,8 +142,7 @@ public:
         for (u16 i = 0; i < m_initial_code_table_size; ++i) {
             m_code_table.append({ { (u8)i }, i });
         }
-        m_original_code_table.clear();
-        m_original_code_table.append(m_code_table);
+        m_original_code_table = m_code_table;
     }
 
     void add_code_to_table(u16 code, Vector<u8> entry)
@@ -164,8 +163,7 @@ public:
         m_code_table.clear();
         m_code_table.append(m_original_code_table);
         m_code_size = m_original_code_size;
-        m_prev_output.clear();
-        m_conjecture.clear();
+        m_output.clear();
     }
 
     Optional<u16> next_code()
@@ -185,49 +183,34 @@ public:
         return m_current_code;
     }
 
+    void extend_code_table(Vector<u8> entry)
+    {
+        if (entry.size() > 1 && m_code_table.size() < 4096) {
+            m_code_table.append({ entry, (u16)m_code_table.size() });
+            if ((int)m_code_table.size() >= pow2(m_code_size) && m_code_size < 12) {
+                ++m_code_size;
+            }
+        } else {
+            dbg() << "Code table max size reached!";
+        }
+    }
+
     Vector<u8> get_output()
     {
-        Vector<u8> output;
         if (m_current_code < m_code_table.size()) {
-            output = m_code_table.at(m_current_code).colors;
-
-            // if (!prev_output.is_empty()) {
-            m_conjecture.append(output.at(0));
-
-            if (m_conjecture.size() > 1 && m_code_table.size() < 4096) {
-                m_code_table.append({ m_conjecture, (u16)m_code_table.size() });
-                if ((int)m_code_table.size() >= pow2(m_code_size) && m_code_size < 12) {
-                    ++m_code_size;
-                }
-            } else {
-                dbg() << "Code table max size reached!";
-            }
-
-            // }
-
-            m_prev_output = output;
-
+            Vector<u8> new_entry = m_output;
+            m_output = m_code_table.at(m_current_code).colors;
+            new_entry.append(m_output[0]);
+            extend_code_table(new_entry);
+        } else if (m_current_code == m_code_table.size()) {
+            m_output.append(m_output[0]);
+            extend_code_table(m_output);
         } else {
-            if (!m_prev_output.is_empty()) {
-                m_conjecture.append(m_prev_output.at(0));
-                if (m_code_table.size() < 4096) {
-                    m_code_table.append({ m_conjecture, (u16)m_code_table.size() });
-                    if ((int)m_code_table.size() >= pow2(m_code_size) && m_code_size < 12) {
-                        ++m_code_size;
-                    }
-                } else {
-                    dbg() << "Code table max size reached!";
-                }
-            }
-
-            output = m_conjecture;
-            m_prev_output = output;
+            dbg() << "Corrupted LZW stream, invalid code: "
+                  << m_current_code << ", code table size: "
+                  << m_code_table.size();
         }
-
-        // dbg() << "color_stream size: " << color_stream.size();
-        m_conjecture = output;
-
-        return output;
+        return m_output;
     }
 
 private:
@@ -240,8 +223,7 @@ private:
     u8 m_original_code_size { 0 };
     u8 m_code_size { 0 };
 
-    Vector<u8> m_prev_output {};
-    Vector<u8> m_conjecture {};
+    Vector<u8> m_output {};
 
     u16 m_current_code { 0 };
 };
