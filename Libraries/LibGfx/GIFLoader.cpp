@@ -27,6 +27,7 @@
 #include <AK/BufferStream.h>
 #include <AK/ByteBuffer.h>
 #include <AK/FileSystemPath.h>
+#include <AK/HashTable.h>
 #include <AK/MappedFile.h>
 #include <AK/NonnullOwnPtrVector.h>
 #include <LibGfx/GIFLoader.h>
@@ -91,12 +92,12 @@ struct GIFLoadingContext {
         Error,
         HeaderDecoded,
     };
-    const u8 *data { nullptr };
+    const u8* data { nullptr };
     size_t data_size { 0 };
     RefPtr<Gfx::Bitmap> bitmap { nullptr };
 };
 
-Optional<GIFFormat> decode_gif_header(BufferStream &stream)
+Optional<GIFFormat> decode_gif_header(BufferStream& stream)
 {
     static const char valid_header_87[] = "GIF87a";
     static const char valid_header_89[] = "GIF89a";
@@ -106,21 +107,21 @@ Optional<GIFFormat> decode_gif_header(BufferStream &stream)
         stream >> header[i];
 
     if (!memcmp(header, valid_header_87, sizeof(header)))
-        return Optional {GIFFormat::GIF87a};
+        return Optional { GIFFormat::GIF87a };
     else if (!memcmp(header, valid_header_89, sizeof(header)))
-        return Optional {GIFFormat::GIF89a};
+        return Optional { GIFFormat::GIF89a };
 
     return {};
 }
 
-int pow2(int n) {
+int pow2(int n)
+{
     int p = 1;
     while (n-- > 0) {
         p *= 2;
     }
     return p;
 }
-
 
 class LZWDecoder {
 public:
@@ -186,31 +187,22 @@ public:
 
     Vector<u8> get_output()
     {
-        // Lookup code in the table...
-        auto entry = m_code_table.find([&](const auto& v) {
-            return v.code == m_current_code;
-        });
-
         Vector<u8> output;
-        if (entry != m_code_table.end()) {
-            output = (*entry).colors;
+        if (m_current_code < m_code_table.size()) {
+            output = m_code_table.at(m_current_code).colors;
 
             // if (!prev_output.is_empty()) {
             m_conjecture.append(output.at(0));
 
-            auto new_entry = m_code_table.find([&](const auto& v) {
-                return v.colors == m_conjecture;
-            });
-            if (new_entry == m_code_table.end()) {
-                if (m_code_table.size() < 4096) {
-                    m_code_table.append({ m_conjecture, (u16)m_code_table.size() });
-                    if ((int)m_code_table.size() >= pow2(m_code_size) && m_code_size < 12) {
-                        ++m_code_size;
-                    }
-                } else {
-                    dbg() << "Code table max size reached!";
+            if (m_conjecture.size() > 1 && m_code_table.size() < 4096) {
+                m_code_table.append({ m_conjecture, (u16)m_code_table.size() });
+                if ((int)m_code_table.size() >= pow2(m_code_size) && m_code_size < 12) {
+                    ++m_code_size;
                 }
+            } else {
+                dbg() << "Code table max size reached!";
             }
+
             // }
 
             m_prev_output = output;
@@ -427,7 +419,6 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
 
     dbg() << "First image: " << images.first().lzw_encoded_bytes.size() << " bytes, min coding size: " << images.first().lzw_min_code_size;
 
-
     LZWDecoder decoder(images.first().lzw_encoded_bytes);
     decoder.init_code_table(images.first().lzw_min_code_size);
 
@@ -440,7 +431,10 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
     // Add end of image code
     decoder.add_code_to_table(initial_code_table_size + 1, { 0 });
 
-    Vector<u8> color_stream;
+    auto bitmap = Bitmap::create_purgeable(BitmapFormat::RGBA32, { images.first().width, images.first().height });
+    bitmap->fill(Color::from_rgb(0xFF0000));
+
+    int pixel_idx = 0;
     while (true) {
         Optional<u16> code = decoder.next_code();
         if (!code.has_value()) {
@@ -456,28 +450,25 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
             break;
         }
 
-        color_stream.append(decoder.get_output());
-    }
+        auto colors = decoder.get_output();
 
-    auto bitmap = Bitmap::create_purgeable(BitmapFormat::RGBA32, {images.first().width, images.first().height});
-    bitmap->fill(Color::from_rgb(0xFF0000));
-    
-    dbg() << "Total colors: " << color_stream.size();
-    for (size_t i = 0; i < color_stream.size(); ++i) {
-        auto color = color_stream.at(i);
-        auto rgb = logical_screen.color_map[color];
-        int x = i % images.first().width;
-        int y = i / images.first().width;
-        // dbg() << "i: " << i << ", x: " << x << ", y: " << y << ", Color index: " << color << ", actual color: (" << rgb.r << "," << rgb.g << "," << rgb.b << ")";
-        
-        if (color != 0) {
-            Color c = Color(rgb.r, rgb.g, rgb.b);
-            bitmap->set_pixel(x, y, c);
-        } else {
-            Color c = Color(rgb.r, rgb.g, rgb.b);
-            bitmap->set_pixel(x, y, c);
+        for (size_t i = 0; i < colors.size(); ++i, ++pixel_idx) {
+            auto color = colors.at(i);
+            auto rgb = logical_screen.color_map[color];
+            int x = pixel_idx % images.first().width;
+            int y = pixel_idx / images.first().width;
+            // dbg() << "i: " << i << ", x: " << x << ", y: " << y << ", Color index: " << color << ", actual color: (" << rgb.r << "," << rgb.g << "," << rgb.b << ")";
+
+            if (color != 0) {
+                Color c = Color(rgb.r, rgb.g, rgb.b);
+                bitmap->set_pixel(x, y, c);
+            } else {
+                Color c = Color(rgb.r, rgb.g, rgb.b);
+                bitmap->set_pixel(x, y, c);
+            }
         }
     }
+
     dbg() << "Finished setting bitmap";
 
     // for (size_t i = 0; i < images.first().lzw_encoded_bytes.size(); ++i) {
@@ -495,37 +486,37 @@ GIFImageDecoderPlugin::GIFImageDecoderPlugin(const u8* data, size_t size)
     m_context->data_size = size;
 }
 
-GIFImageDecoderPlugin::~GIFImageDecoderPlugin() { }
+GIFImageDecoderPlugin::~GIFImageDecoderPlugin() {}
 
-Size GIFImageDecoderPlugin::size() 
+Size GIFImageDecoderPlugin::size()
 {
     if (m_context->bitmap.is_null()) {
         return {};
     }
-    
+
     return { m_context->bitmap->width(), m_context->bitmap->height() };
 }
 
-RefPtr<Gfx::Bitmap> GIFImageDecoderPlugin::bitmap() 
+RefPtr<Gfx::Bitmap> GIFImageDecoderPlugin::bitmap()
 {
     if (m_context->bitmap.is_null()) {
-        m_context->bitmap = load_gif_impl(m_context->data, m_context->data_size); 
+        m_context->bitmap = load_gif_impl(m_context->data, m_context->data_size);
     }
     dbg() << "Returning bitmap with size " << m_context->bitmap->width() << ", " << m_context->bitmap->height();
     return m_context->bitmap;
 }
 
-void GIFImageDecoderPlugin::set_volatile() 
+void GIFImageDecoderPlugin::set_volatile()
 {
-
 }
 
-bool GIFImageDecoderPlugin::set_nonvolatile() 
+bool GIFImageDecoderPlugin::set_nonvolatile()
 {
     return true;
 }
 
-bool GIFImageDecoderPlugin::sniff() {
+bool GIFImageDecoderPlugin::sniff()
+{
     auto buffer = ByteBuffer::wrap(m_context->data, m_context->data_size);
     BufferStream stream(buffer);
     return decode_gif_header(stream).has_value();
