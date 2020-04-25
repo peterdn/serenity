@@ -133,18 +133,26 @@ public:
 
     void init_code_table(u8 min_code_size)
     {
-        m_initial_code_table_size = pow(2, min_code_size);
+        m_code_size = min_code_size;
+        int initial_table_size = pow(2, min_code_size);
         m_code_table.clear();
-        for (u16 i = 0; i < m_initial_code_table_size; ++i) {
+        for (u16 i = 0; i < initial_table_size; ++i) {
             m_code_table.append({ { (u8)i }, i });
         }
         m_original_code_table = m_code_table;
+        m_original_code_size = m_code_size;
     }
 
-    void add_code_to_table(u16 code, Vector<u8> entry)
+    u16 add_control_code()
     {
-        m_code_table.append({ entry, code });
-        m_original_code_table.append({ entry, code });
+        u16 control_code = m_code_table.size();
+        m_code_table.append({ { }, control_code });
+        m_original_code_table.append({ { }, control_code });
+        if ((int)m_code_table.size() >= pow(2, m_code_size) && m_code_size < 12) {
+            ++m_code_size;
+            ++m_original_code_size;
+        }
+        return control_code;
     }
 
     void set_code_size(int code_size)
@@ -213,7 +221,6 @@ public:
 
 private:
     const Vector<u8>& m_lzw_bytes;
-    u16 m_initial_code_table_size { 0 };
     Vector<CodeTableEntry> m_original_code_table {};
     Vector<CodeTableEntry> m_code_table {};
 
@@ -397,14 +404,9 @@ bool load_gif_impl(GIFLoadingContext& context)
         LZWDecoder decoder(image.lzw_encoded_bytes);
         decoder.init_code_table(image.lzw_min_code_size);
 
-        // Initialise code table
-        u16 initial_code_table_size = pow(2, image.lzw_min_code_size);
-        decoder.set_code_size(image.lzw_min_code_size + 1);
-
-        // Add clear code
-        decoder.add_code_to_table(initial_code_table_size, { 0 });
-        // Add end of image code
-        decoder.add_code_to_table(initial_code_table_size + 1, { 0 });
+        // Add GIF-specific control codes
+        const int CLEAR_CODE = decoder.add_control_code();
+        const int END_OF_INFORMATION_CODE = decoder.add_control_code();
 
         auto bitmap = Bitmap::create_purgeable(BitmapFormat::RGBA32, { image.width, image.height });
 
@@ -416,11 +418,10 @@ bool load_gif_impl(GIFLoadingContext& context)
                 return false;
             }
 
-            if (code.value() == initial_code_table_size) {
+            if (code.value() == CLEAR_CODE) {
                 decoder.reset_code_table();
                 continue;
-            } else if (code.value() == initial_code_table_size + 1) {
-                // Received end of information code for this frame.
+            } else if (code.value() == END_OF_INFORMATION_CODE) {
                 break;
             }
 
