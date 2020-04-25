@@ -126,26 +126,15 @@ public:
         u16 code;
     };
 
-    explicit LZWDecoder(const Vector<u8>& lzw_bytes)
-        : m_lzw_bytes(lzw_bytes)
+    explicit LZWDecoder(const Vector<u8>& lzw_bytes, u8 min_code_size)
+        : m_lzw_bytes(lzw_bytes), m_code_size(min_code_size), m_original_code_size(min_code_size)
     {
-    }
-
-    void init_code_table(u8 min_code_size)
-    {
-        m_code_size = min_code_size;
-        int initial_table_size = pow(2, min_code_size);
-        m_code_table.clear();
-        for (u16 i = 0; i < initial_table_size; ++i) {
-            m_code_table.append({ { (u8)i }, i });
-        }
-        m_original_code_table = m_code_table;
-        m_original_code_size = m_code_size;
+        init_code_table();
     }
 
     u16 add_control_code()
     {
-        u16 control_code = m_code_table.size();
+        const u16 control_code = m_code_table.size();
         m_code_table.append({ { }, control_code });
         m_original_code_table.append({ { }, control_code });
         if ((int)m_code_table.size() >= pow(2, m_code_size) && m_code_size < 12) {
@@ -155,14 +144,7 @@ public:
         return control_code;
     }
 
-    void set_code_size(int code_size)
-    {
-        m_code_size = code_size;
-        m_original_code_size = code_size;
-    }
-
-    int resetted = 0;
-    void reset_code_table()
+    void reset()
     {
         m_code_table.clear();
         m_code_table.append(m_original_code_table);
@@ -194,16 +176,6 @@ public:
         return m_current_code;
     }
 
-    void extend_code_table(Vector<u8> entry)
-    {
-        if (entry.size() > 1 && m_code_table.size() < 4096) {
-            m_code_table.append({ entry, (u16)m_code_table.size() });
-            if ((int)m_code_table.size() >= pow(2, m_code_size) && m_code_size < 12) {
-                ++m_code_size;
-            }
-        }
-    }
-
     Vector<u8> get_output()
     {
         ASSERT(m_current_code <= m_code_table.size());
@@ -220,13 +192,33 @@ public:
     }
 
 private:
+    void init_code_table()
+    {
+        const int initial_table_size = pow(2, m_code_size);
+        m_code_table.clear();
+        for (u16 i = 0; i < initial_table_size; ++i) {
+            m_code_table.append({ { (u8)i }, i });
+        }
+        m_original_code_table = m_code_table;
+    }
+
+    void extend_code_table(Vector<u8> entry)
+    {
+        if (entry.size() > 1 && m_code_table.size() < 4096) {
+            m_code_table.append({ entry, (u16)m_code_table.size() });
+            if ((int)m_code_table.size() >= pow(2, m_code_size) && m_code_size < 12) {
+                ++m_code_size;
+            }
+        }
+    }
+
     const Vector<u8>& m_lzw_bytes;
     Vector<CodeTableEntry> m_original_code_table {};
     Vector<CodeTableEntry> m_code_table {};
 
     int m_current_bit_index { 0 };
-    u8 m_original_code_size { 0 };
     u8 m_code_size { 0 };
+    u8 m_original_code_size { 0 };
 
     Vector<u8> m_output {};
 
@@ -401,8 +393,7 @@ bool load_gif_impl(GIFLoadingContext& context)
         auto& image = images.at(i);
         printf("Image %zu: %d,%d %dx%d  %zu bytes LZW-encoded\n", i, image.x, image.y, image.width, image.height, image.lzw_encoded_bytes.size());
 
-        LZWDecoder decoder(image.lzw_encoded_bytes);
-        decoder.init_code_table(image.lzw_min_code_size);
+        LZWDecoder decoder(image.lzw_encoded_bytes,image.lzw_min_code_size);
 
         // Add GIF-specific control codes
         const int CLEAR_CODE = decoder.add_control_code();
@@ -419,7 +410,7 @@ bool load_gif_impl(GIFLoadingContext& context)
             }
 
             if (code.value() == CLEAR_CODE) {
-                decoder.reset_code_table();
+                decoder.reset();
                 continue;
             } else if (code.value() == END_OF_INFORMATION_CODE) {
                 break;
