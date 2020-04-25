@@ -154,24 +154,36 @@ public:
 
     Optional<u16> next_code()
     {
-        int shift = (m_current_bit_index % 8);
-        u32 mask = (u32)(pow(2, m_code_size) - 1) << shift;
-
         size_t current_byte_index = m_current_bit_index / 8;
-
         if (current_byte_index >= m_lzw_bytes.size()) {
             return { };
         }
-        const u32* addr = ((const u32*)&m_lzw_bytes.at(current_byte_index));
-        u32 tuple = *addr;
-        m_current_code = (tuple & mask) >> m_current_bit_index % 8;
-        m_current_bit_index += m_code_size;
+
+        // Read code bits using a 32-bit mask. If current code size > 9 bits
+        // then it's possible the code spans 3 bytes.
+        u8 current_bit_offset = m_current_bit_index % 8;
+        u32 mask = (u32)(pow(2, m_code_size) - 1) << current_bit_offset;
+
+        // Make sure that we don't read bytes past the end of the data.
+        int bytes_past_end = current_byte_index + sizeof(mask) - m_lzw_bytes.size();
+        u8 bits_past_end = 0;
+        if (bytes_past_end > 0) {
+            current_byte_index -= bytes_past_end;
+            mask <<= bytes_past_end * 8;
+            bits_past_end = bytes_past_end * 8;
+        }
+
+        ASSERT(current_byte_index + sizeof(mask) - 1 < m_lzw_bytes.size());
+        const u32* addr = (const u32*)&m_lzw_bytes.at(current_byte_index);
+        m_current_code = (*addr & mask) >> (current_bit_offset + bits_past_end);
 
         if (m_current_code > m_code_table.size()) {
-            dbg() << "Corrupted LZW stream, invalid code: " << m_current_code
-                  << ", code table size: " << m_code_table.size();
+            dbg() << "Corrupted LZW stream, invalid code: " << m_current_code << " at bit index: "
+                  << m_current_bit_index << ", code table size: " << m_code_table.size();
             return { };
         }
+
+        m_current_bit_index += m_code_size;
 
         return m_current_code;
     }
@@ -213,16 +225,17 @@ private:
     }
 
     const Vector<u8>& m_lzw_bytes;
-    Vector<CodeTableEntry> m_original_code_table {};
-    Vector<CodeTableEntry> m_code_table {};
 
     int m_current_bit_index { 0 };
+
+    Vector<CodeTableEntry> m_code_table {};
+    Vector<CodeTableEntry> m_original_code_table {};
+
     u8 m_code_size { 0 };
     u8 m_original_code_size { 0 };
 
-    Vector<u8> m_output {};
-
     u16 m_current_code { 0 };
+    Vector<u8> m_output {};
 };
 
 bool load_gif_impl(GIFLoadingContext& context)
