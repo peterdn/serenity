@@ -32,6 +32,7 @@
 #include <AK/NonnullOwnPtrVector.h>
 #include <LibGfx/GIFLoader.h>
 #include <LibGfx/Painter.h>
+#include <LibM/math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -114,15 +115,6 @@ Optional<GIFFormat> decode_gif_header(BufferStream& stream)
     return {};
 }
 
-int pow2(int n)
-{
-    int p = 1;
-    while (n-- > 0) {
-        p *= 2;
-    }
-    return p;
-}
-
 class LZWDecoder {
 public:
     struct CodeTableEntry {
@@ -137,7 +129,7 @@ public:
 
     void init_code_table(u8 min_code_size)
     {
-        m_initial_code_table_size = pow2(min_code_size);
+        m_initial_code_table_size = pow(2, min_code_size);
         m_code_table.clear();
         for (u16 i = 0; i < m_initial_code_table_size; ++i) {
             m_code_table.append({ { (u8)i }, i });
@@ -169,7 +161,7 @@ public:
     Optional<u16> next_code()
     {
         int shift = (m_current_bit_index % 8);
-        u32 mask = (pow2(m_code_size) - 1) << shift;
+        u32 mask = (u32)(pow(2, m_code_size) - 1) << shift;
 
         size_t current_byte_index = m_current_bit_index / 8;
 
@@ -187,7 +179,7 @@ public:
     {
         if (entry.size() > 1 && m_code_table.size() < 4096) {
             m_code_table.append({ entry, (u16)m_code_table.size() });
-            if ((int)m_code_table.size() >= pow2(m_code_size) && m_code_size < 12) {
+            if ((int)m_code_table.size() >= pow(2, m_code_size) && m_code_size < 12) {
                 ++m_code_size;
             }
         } else {
@@ -405,7 +397,7 @@ RefPtr<Gfx::Bitmap> load_gif_impl(const u8* data, size_t data_size)
     decoder.init_code_table(images.first().lzw_min_code_size);
 
     // initialise code table
-    u16 initial_code_table_size = pow2(images.first().lzw_min_code_size);
+    u16 initial_code_table_size = pow(2, images.first().lzw_min_code_size);
     decoder.set_code_size(images.first().lzw_min_code_size + 1);
 
     // Add clear code
