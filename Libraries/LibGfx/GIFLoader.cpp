@@ -430,17 +430,12 @@ bool load_gif_impl(GIFLoadingContext& context)
             for (size_t i = 0; i < colors.size(); ++i, ++pixel_idx) {
                 auto color = colors.at(i);
                 auto rgb = logical_screen.color_map[color];
-                
+
                 int x = pixel_idx % image.width;
                 int y = pixel_idx / image.width;
 
-                if (color != 0) {
-                    Color c = Color(rgb.r, rgb.g, rgb.b);
-                    bitmap->set_pixel(x, y, c);
-                } else {
-                    Color c = Color(rgb.r, rgb.g, rgb.b);
-                    bitmap->set_pixel(x, y, c);
-                }
+                Color c = Color(rgb.r, rgb.g, rgb.b);
+                bitmap->set_pixel(x, y, c);
             }
         }
 
