@@ -491,7 +491,7 @@ RefPtr<Gfx::Bitmap> GIFImageDecoderPlugin::bitmap()
         }
     }
 
-    // TODO: for now only return the first frame
+    // TODO: for now only return the first frame.
     if (m_context->frames.is_empty()) {
         return nullptr;
     }
@@ -500,11 +500,22 @@ RefPtr<Gfx::Bitmap> GIFImageDecoderPlugin::bitmap()
 
 void GIFImageDecoderPlugin::set_volatile()
 {
+    for (auto& frame : m_context->frames) {
+        frame->set_volatile();
+    }
 }
 
 bool GIFImageDecoderPlugin::set_nonvolatile()
 {
-    return true;
+    if (m_context->frames.is_empty()) {
+        return false;
+    }
+
+    bool success = true;
+    for (auto& frame : m_context->frames) {
+        success &= frame->set_nonvolatile();
+    }
+    return success;
 }
 
 bool GIFImageDecoderPlugin::sniff()
