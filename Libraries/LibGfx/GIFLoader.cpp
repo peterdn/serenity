@@ -51,7 +51,7 @@ struct ImageDescriptor {
     RGB color_map[256];
     u8 lzw_min_code_size;
     Vector<u8> lzw_encoded_bytes;
-    RefPtr<Gfx::Bitmap> bitmap;
+    Vector<u8> decoded_colors;
 
     // Fields from optional graphic control extension block
     enum DisposalMethod : u8 {
@@ -87,6 +87,9 @@ struct GIFLoadingContext {
     u8 background_color_index { 0 };
     NonnullOwnPtrVector<ImageDescriptor> images {};
     size_t loops { 1 };
+
+    RefPtr<Gfx::Bitmap> cached_image {};
+    size_t cached_image_index { 0 };
 };
 
 RefPtr<Gfx::Bitmap> load_gif(const StringView& path)
@@ -278,26 +281,27 @@ static bool decode_frames_up_to_index(GIFLoadingContext& context, size_t frame_i
         const int clear_code = decoder.add_control_code();
         const int end_of_information_code = decoder.add_control_code();
 
-        auto background_rgb = context.logical_screen.color_map[context.background_color_index];
-        Color background_color = Color(background_rgb.r, background_rgb.g, background_rgb.b);
-
-        image.bitmap = Bitmap::create_purgeable(BitmapFormat::RGBA32, { context.logical_screen.width, context.logical_screen.height });
+        // auto background_rgb = context.logical_screen.color_map[context.background_color_index];
+        // Color background_color = Color(background_rgb.r, background_rgb.g, background_rgb.b);
 
         const auto previous_image_disposal_method = i > 0 ? context.images.at(i - 1).disposal_method : ImageDescriptor::DisposalMethod::None;
 
+        image.decoded_colors.resize(context.logical_screen.width * context.logical_screen.height);
+
         if (previous_image_disposal_method == ImageDescriptor::DisposalMethod::InPlace) {
-            for (int y = 0; y < image.bitmap->height(); ++y) {
-                for (int x = 0; x < image.bitmap->width(); ++x) {
-                    image.bitmap->set_pixel(x, y, context.images.at(i - 1).bitmap->get_pixel(x, y));
-                }
-            }
+            image.decoded_colors = context.images.at(i - 1).decoded_colors;
+            // for (int y = 0; y < image.bitmap->height(); ++y) {
+            //     for (int x = 0; x < image.bitmap->width(); ++x) {
+            //         image.bitmap->set_pixel(x, y, context.images.at(i - 1).bitmap->get_pixel(x, y));
+            //     }
+            // }
         } else if (previous_image_disposal_method == ImageDescriptor::DisposalMethod::RestoreBackground) {
-            image.bitmap->fill(background_color);
+            // image.bitmap->fill(background_color);
         } else if (previous_image_disposal_method == ImageDescriptor::DisposalMethod::RestorePrevious) {
-            image.bitmap->fill(Color(Color::NamedColor::Transparent));
+            // image.bitmap->fill(Color(Color::NamedColor::Transparent));
         }
 
-        int pixel_index = 0;
+        int image_pixel_index = 0;
         while (true) {
             Optional<u16> code = decoder.next_code();
             if (!code.has_value()) {
@@ -315,22 +319,16 @@ static bool decode_frames_up_to_index(GIFLoadingContext& context, size_t frame_i
             auto colors = decoder.get_output();
 
             for (const auto& color : colors) {
-                auto rgb = context.logical_screen.color_map[color];
+                int x = image_pixel_index % image.width + image.x;
+                int y = image_pixel_index / image.width + image.y;
 
-                int x = pixel_index % image.width + image.x;
-                int y = pixel_index / image.width + image.y;
-
-                Color c = Color(rgb.r, rgb.g, rgb.b);
-
-                if (image.transparent && color == image.transparency_index) {
-                    c.set_alpha(0);
-                }
+                size_t global_pixel_index = y * context.logical_screen.width + x;
 
                 if (!image.transparent || previous_image_disposal_method == ImageDescriptor::DisposalMethod::None || color != image.transparency_index) {
-                    image.bitmap->set_pixel(x, y, c);
+                    image.decoded_colors[global_pixel_index] = color;
                 }
 
-                ++pixel_index;
+                ++image_pixel_index;
             }
         }
 
@@ -338,6 +336,32 @@ static bool decode_frames_up_to_index(GIFLoadingContext& context, size_t frame_i
     }
 
     return true;
+}
+
+static RefPtr<Gfx::Bitmap> render_frame(GIFLoadingContext& context, size_t frame_index) {
+    auto bitmap = Bitmap::create_purgeable(BitmapFormat::RGBA32, { context.logical_screen.width, context.logical_screen.height });
+    const auto& image = context.images.at(frame_index);
+
+    int pixel_index = 0;
+    dbg() << "Size of decoded_colors = " << image.decoded_colors.size();
+    for (const auto& color : image.decoded_colors) {
+        auto rgb = context.logical_screen.color_map[color];
+
+        int x = pixel_index % context.logical_screen.width;
+        int y = pixel_index / context.logical_screen.width;
+
+        Color c = Color(rgb.r, rgb.g, rgb.b);
+
+        if (image.transparent && color == image.transparency_index) {
+            c.set_alpha(0);
+        }
+
+        bitmap->set_pixel(x, y, c);
+
+        ++pixel_index;
+    }
+    dbg() << "Finished rendering, pixel_index = " << pixel_index;
+    return bitmap;
 }
 
 static bool load_gif_frame_descriptors(GIFLoadingContext& context)
@@ -571,9 +595,9 @@ RefPtr<Gfx::Bitmap> GIFImageDecoderPlugin::bitmap()
 
 void GIFImageDecoderPlugin::set_volatile()
 {
-    for (size_t i = 0; i < m_context->frames_decoded; ++i) {
-        m_context->images.at(i).bitmap->set_volatile();
-    }
+    // for (size_t i = 0; i < m_context->frames_decoded; ++i) {
+    //     m_context->images.at(i).bitmap->set_volatile();
+    // }
 }
 
 bool GIFImageDecoderPlugin::set_nonvolatile()
@@ -583,9 +607,9 @@ bool GIFImageDecoderPlugin::set_nonvolatile()
     }
 
     bool success = true;
-    for (size_t i = 0; i < m_context->frames_decoded; ++i) {
-        success &= m_context->images.at(i).bitmap->set_nonvolatile();
-    }
+    // for (size_t i = 0; i < m_context->frames_decoded; ++i) {
+    //     success &= m_context->images.at(i).bitmap->set_nonvolatile();
+    // }
     return success;
 }
 
@@ -651,7 +675,14 @@ ImageFrameDescriptor GIFImageDecoderPlugin::frame(size_t i)
     }
 
     ImageFrameDescriptor frame {};
-    frame.image = m_context->images.at(i).bitmap;
+
+    if (!m_context->cached_image || m_context->cached_image_index != i) {
+        dbg() << "Updating cache";
+        m_context->cached_image = render_frame(*m_context, i);
+        m_context->cached_image_index = i;
+    }
+
+    frame.image = m_context->cached_image;
     frame.duration = m_context->images.at(i).duration * 10;
 
     if (frame.duration <= 10) {
